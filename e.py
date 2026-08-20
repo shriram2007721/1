@@ -3,6 +3,7 @@ import threading
 
 
 class DigitalWallet:
+
     def __init__(self, daily_limit=50000):
         self.accounts = {}
         self.daily_limit = daily_limit
@@ -16,11 +17,10 @@ class DigitalWallet:
         self.accounts[account_id] = {
             "name": name,
             "pin": str(pin),
-            "balance": 0.0,
-            "daily_transactions": 0.0,
+            "balance": 0,
+            "daily_total": 0,
             "transactions": [],
-            "failed_pins": 0,
-            "last_transaction_time": None
+            "failed_pins": 0
         }
 
         return "Account created successfully"
@@ -37,44 +37,45 @@ class DigitalWallet:
             return True
 
         account["failed_pins"] += 1
-
-        if account["failed_pins"] >= 3:
-            print(f"FRAUD ALERT: Multiple failed PIN attempts for {account_id}")
-
         return False
 
     # Fraud Detection
     def fraud_detection(self, account_id, amount):
-        account = self.accounts[account_id]
-        suspicious = []
 
-        # More than 5 transactions in 10 minutes
+        account = self.accounts[account_id]
+        alerts = []
+
         ten_minutes_ago = datetime.now() - timedelta(minutes=10)
 
-        recent_transactions = [
-            t for t in account["transactions"]
-            if t["time"] >= ten_minutes_ago
-        ]
+        recent_transactions = 0
 
-        if len(recent_transactions) >= 5:
-            suspicious.append("More than 5 transactions in 10 minutes")
+        for transaction in account["transactions"]:
+            if transaction["time"] >= ten_minutes_ago:
+                recent_transactions += 1
+
+        # More than 5 transactions in 10 minutes
+        if recent_transactions >= 5:
+            alerts.append("More than 5 transactions in 10 minutes")
 
         # Large transaction
         if amount > 10000:
-            suspicious.append("Large transaction")
+            alerts.append("Large transaction")
 
         # Multiple failed PIN attempts
         if account["failed_pins"] >= 3:
-            suspicious.append("Multiple failed PIN attempts")
+            alerts.append("Multiple failed PIN attempts")
 
         # Unusual transaction amount
-        if amount > account["balance"] * 0.8 and account["balance"] > 0:
-            suspicious.append("Unusual transaction amount")
+        if account["balance"] > 0:
+            if amount > account["balance"] * 0.8:
+                alerts.append("Unusual transaction amount")
 
-        return suspicious
+        return alerts
 
     # Record Transaction
-    def record_transaction(self, transaction_type, amount, status, account_id):
+    def record_transaction(self, account_id, transaction_type,
+                           amount, status):
+
         self.accounts[account_id]["transactions"].append({
             "type": transaction_type,
             "amount": amount,
@@ -84,127 +85,130 @@ class DigitalWallet:
 
     # Deposit
     def deposit(self, account_id, amount, pin):
-        if not self.verify_pin(account_id, pin):
-            return "Invalid PIN"
+
+        if account_id not in self.accounts:
+            return "Account not found"
 
         if amount <= 0:
             return "Invalid amount"
 
-        fraud = self.fraud_detection(account_id, amount)
+        if not self.verify_pin(account_id, pin):
+            return "Invalid PIN"
+
+        alerts = self.fraud_detection(account_id, amount)
 
         self.accounts[account_id]["balance"] += amount
-        self.accounts[account_id]["daily_transactions"] += amount
+        self.accounts[account_id]["daily_total"] += amount
+
+        status = "SUSPICIOUS" if alerts else "SUCCESS"
 
         self.record_transaction(
+            account_id,
             "Deposit",
             amount,
-            "SUSPICIOUS" if fraud else "SUCCESS",
-            account_id
+            status
         )
 
-        if fraud:
-            return "Deposit successful - SUSPICIOUS: " + ", ".join(fraud)
+        if alerts:
+            return "Deposit successful - SUSPICIOUS"
 
         return "Deposit successful"
 
     # Withdrawal
     def withdraw(self, account_id, amount, pin):
-        if not self.verify_pin(account_id, pin):
-            return "Invalid PIN"
+
+        if account_id not in self.accounts:
+            return "Account not found"
 
         if amount <= 0:
             return "Invalid amount"
+
+        if not self.verify_pin(account_id, pin):
+            return "Invalid PIN"
 
         account = self.accounts[account_id]
 
         if account["balance"] < amount:
-            self.record_transaction(
-                "Withdrawal",
-                amount,
-                "FAILED - Insufficient Balance",
-                account_id
-            )
             return "Insufficient balance"
 
-        if account["daily_transactions"] + amount > self.daily_limit:
+        if account["daily_total"] + amount > self.daily_limit:
             return "Daily transaction limit exceeded"
 
-        fraud = self.fraud_detection(account_id, amount)
+        alerts = self.fraud_detection(account_id, amount)
 
         account["balance"] -= amount
-        account["daily_transactions"] += amount
+        account["daily_total"] += amount
+
+        status = "SUSPICIOUS" if alerts else "SUCCESS"
 
         self.record_transaction(
+            account_id,
             "Withdrawal",
             amount,
-            "SUSPICIOUS" if fraud else "SUCCESS",
-            account_id
+            status
         )
 
-        if fraud:
-            return "Withdrawal successful - SUSPICIOUS: " + ", ".join(fraud)
+        if alerts:
+            return "Withdrawal successful - SUSPICIOUS"
 
         return "Withdrawal successful"
 
     # Money Transfer
-    def transfer(self, sender_id, receiver_id, amount, pin):
+    def transfer(self, sender, receiver, amount, pin):
 
-        if sender_id not in self.accounts:
-            return "Sender account does not exist"
+        if sender not in self.accounts:
+            return "Sender account not found"
 
-        if receiver_id not in self.accounts:
-            return "Receiver account does not exist"
+        if receiver not in self.accounts:
+            return "Receiver account not found"
 
         if amount <= 0:
             return "Invalid amount"
 
-        if not self.verify_pin(sender_id, pin):
+        if not self.verify_pin(sender, pin):
             return "Invalid PIN"
 
         with self.lock:
 
-            sender = self.accounts[sender_id]
+            sender_account = self.accounts[sender]
 
-            if sender["balance"] < amount:
-                self.record_transaction(
-                    "Transfer",
-                    amount,
-                    "FAILED - Insufficient Balance",
-                    sender_id
-                )
+            if sender_account["balance"] < amount:
                 return "Insufficient balance"
 
-            if sender["daily_transactions"] + amount > self.daily_limit:
+            if sender_account["daily_total"] + amount > self.daily_limit:
                 return "Daily transaction limit exceeded"
 
-            fraud = self.fraud_detection(sender_id, amount)
+            alerts = self.fraud_detection(sender, amount)
 
-            sender["balance"] -= amount
-            self.accounts[receiver_id]["balance"] += amount
+            sender_account["balance"] -= amount
+            sender_account["daily_total"] += amount
 
-            sender["daily_transactions"] += amount
+            self.accounts[receiver]["balance"] += amount
+
+            status = "SUSPICIOUS" if alerts else "SUCCESS"
 
             self.record_transaction(
+                sender,
                 "Transfer",
                 amount,
-                "SUSPICIOUS" if fraud else "SUCCESS",
-                sender_id
+                status
             )
 
             self.record_transaction(
+                receiver,
                 "Transfer Received",
                 amount,
-                "SUCCESS",
-                receiver_id
+                "SUCCESS"
             )
 
-            if fraud:
-                return "Transfer successful - SUSPICIOUS: " + ", ".join(fraud)
+            if alerts:
+                return "Transfer successful - SUSPICIOUS"
 
             return "Transfer successful"
 
     # Transaction History
     def transaction_history(self, account_id):
+
         if account_id not in self.accounts:
             return []
 
@@ -212,32 +216,28 @@ class DigitalWallet:
 
     # Balance Verification
     def check_balance(self, account_id, pin):
+
         if not self.verify_pin(account_id, pin):
             return "Invalid PIN"
 
         return self.accounts[account_id]["balance"]
 
 
-# Demo
 if __name__ == "__main__":
 
-    wallet = DigitalWallet(daily_limit=50000)
+    wallet = DigitalWallet()
 
     print(wallet.create_account("A101", "Rahul", "1234"))
     print(wallet.create_account("A102", "Arun", "5678"))
 
     print(wallet.deposit("A101", 20000, "1234"))
-
-    print("Balance:", wallet.check_balance("A101", "1234"))
-
     print(wallet.withdraw("A101", 2000, "1234"))
-
     print(wallet.transfer("A101", "A102", 5000, "1234"))
 
-    print("Final Balance:",
+    print("Balance:",
           wallet.check_balance("A101", "1234"))
 
-    print("\nTransaction History:")
+    print("Transaction History:")
 
     for transaction in wallet.transaction_history("A101"):
         print(transaction)
